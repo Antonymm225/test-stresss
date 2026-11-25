@@ -1,0 +1,66 @@
+name: Prueba de carga
+
+on:
+  workflow_dispatch:
+    inputs:
+      total:
+        description: 'Total de registros a enviar (sumando todas las máquinas)'
+        required: true
+        default: '100'
+      horas:
+        description: 'Horas en que se reparte el envío (0 = lo más rápido posible)'
+        required: true
+        default: '0'
+      maquinas:
+        description: 'Máquinas en paralelo (cada una sale con su propia IP)'
+        required: true
+        default: '1'
+      paralelo:
+        description: 'Envíos simultáneos por máquina'
+        required: true
+        default: '200'
+
+jobs:
+  preparar:
+    runs-on: ubuntu-latest
+    outputs:
+      lista: ${{ steps.m.outputs.lista }}
+    steps:
+      - id: m
+        run: |
+          n=${{ github.event.inputs.maquinas }}
+          echo "lista=$(seq -s, 0 $((n-1)) | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+
+  enviar:
+    needs: preparar
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        maquina: ${{ fromJSON(needs.preparar.outputs.lista) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Enviar
+        env:
+          LEAD_URL: ${{ secrets.LEAD_URL }}
+          BYPASS_HEADER: ${{ secrets.BYPASS_HEADER }}
+          MAQUINA: ${{ matrix.maquina }}
+        run: |
+          TOTAL=${{ github.event.inputs.total }}
+          N=${{ github.event.inputs.maquinas }}
+          I=${{ matrix.maquina }}
+          PARTE=$(( TOTAL / N ))
+          if [ "$I" -eq $(( N - 1 )) ]; then PARTE=$(( TOTAL - PARTE * (N - 1) )); fi
+          SEG=$(awk "BEGIN { printf \"%d\", ${{ github.event.inputs.horas }} * 3600 }")
+          node enviar.mjs --total "$PARTE" --duracion "$SEG" --paralelo ${{ github.event.inputs.paralelo }} --salida "resultados-$I.ndjson.gz"
+      - name: Guardar detalle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultados-${{ matrix.maquina }}
+          path: resultados-${{ matrix.maquina }}.ndjson.gz
+          if-no-files-found: ignore
